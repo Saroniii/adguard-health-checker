@@ -1,19 +1,49 @@
 # adguard-health-checker
 
+## Linux でのセットアップ
+
+ビルドには Rust の stable ツールチェーン（`rustc` / `cargo`）と Git、C/C++ コンパイラー、CMake、make が必要です。Rust は rustup などで事前にインストールしてください。
+
+Ubuntu / Debian でのビルド用パッケージのインストール例です。
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git build-essential cmake pkg-config ca-certificates
+```
+
+ソースを取得して、ロックファイルに固定した依存関係でビルドします。
+
+```bash
+git clone https://github.com/Saroniii/adguard-health-checker.git
+cd adguard-health-checker
+cargo build --release --locked
+```
+
 ## 設定と起動
 
 `config.example.toml` を `config.toml` にコピーし、AdGuard Home の URL、認証情報、切り替え先 DNS を設定します。
 
-```powershell
-Copy-Item config.example.toml config.toml
-cargo run
+```bash
+cp config.example.toml config.toml
+chmod 600 config.toml
+${EDITOR:-vi} config.toml
+```
+
+設定例の IP アドレス・URL・認証情報を実環境の値に変更してから起動してください。
+`standby_upstreams` に対応する Fallback の監視対象も設定します。
+監視先 DNS と AdGuard Home の管理 API に接続できる Linux ホストで実行してください。
+
+```bash
+./target/release/adguard-health-checker ./config.toml
 ```
 
 既定ではカレントディレクトリの `config.toml` を読み込みます。コンフィグを指定する場合は引数で指定できます。
 
-```powershell
-cargo run -- path/to/config.toml
+```bash
+./target/release/adguard-health-checker /absolute/path/to/config.toml
 ```
+
+終了するには `Ctrl+C` を押します。開発時は `cargo run -- ./config.toml` でも起動できます。
 
 `[[adguard_servers]]` を追加すると複数台を設定できます。各項目は必須です。
 
