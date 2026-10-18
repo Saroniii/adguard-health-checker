@@ -1,142 +1,132 @@
-# adguard-health-checker
+﻿# adguard-health-checker
 
-## Linux でのセットアップ
+AdGuard Home の上流 DNS を監視し、障害時に予備の DNS へ自動で切り替える Rust 製ツールです。Linux での利用を想定しています。
 
-ビルドには Rust の stable ツールチェーン（`rustc` / `cargo`）と Git、C/C++ コンパイラー、CMake、make が必要です。Rust は rustup などで事前にインストールしてください。
+- **Primary**：通常使う上流 DNS
+- **Fallback**：障害時に使う予備の上流 DNS
 
-Ubuntu / Debian でのビルド用パッケージのインストール例です。
+## はじめに
+
+Rust の stable ツールチェーン（`rustc` / `cargo`）を事前にインストールしてください。実行するホストから、監視先 DNS と AdGuard Home の管理 API に接続できる必要があります。
+
+### 1. ビルドする
+
+Ubuntu / Debian の例です。
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git build-essential cmake pkg-config ca-certificates
-```
 
-ソースを取得して、ロックファイルに固定した依存関係でビルドします。
-
-```bash
 git clone https://github.com/Saroniii/adguard-health-checker.git
 cd adguard-health-checker
 cargo build --release --locked
 ```
 
-## 設定と起動
-
-`config.example.toml` を `config.toml` にコピーし、AdGuard Home の URL、認証情報、切り替え先 DNS を設定します。
+### 2. 設定する
 
 ```bash
 cp config.example.toml config.toml
 chmod 600 config.toml
-${EDITOR:-vi} config.toml
+vi config.toml
 ```
 
-設定例の IP アドレス・URL・認証情報を実環境の値に変更してから起動してください。
-`standby_upstreams` に対応する Fallback の監視対象も設定します。
-監視先 DNS と AdGuard Home の管理 API に接続できる Linux ホストで実行してください。
+[設定例](config.example.toml)の値を、実環境に合わせて変更します。特に次の3点を確認してください。
+
+| 設定箇所 | 設定する内容 |
+| --- | --- |
+| `[monitor]` | 監視間隔・失敗回数・問い合わせるドメイン |
+| `[[dns_servers]]` | Primary と Fallback の監視先 IP・通信方式 |
+| `[[adguard_servers]]` | AdGuard Home の URL・認証情報・切り替え先 DNS |
+
+`active_upstreams` に通常の DNS、`standby_upstreams` に予備の DNS を指定します。それぞれに対応する監視先を `dns_servers` に登録してください。
+
+設定例の IP・URL・パスワードはダミーです。そのままでは利用できません。
+
+### 3. 起動する
 
 ```bash
 ./target/release/adguard-health-checker ./config.toml
 ```
 
-既定ではカレントディレクトリの `config.toml` を読み込みます。コンフィグを指定する場合は引数で指定できます。
+監視結果は端末に出力されます。終了は `Ctrl+C` です。
 
-```bash
-./target/release/adguard-health-checker /absolute/path/to/config.toml
-```
+設定ファイルは引数で指定できます。省略すると、カレントディレクトリの `config.toml` を読み込みます。設定を変更したら再起動してください。
 
-終了するには `Ctrl+C` を押します。開発時は `cargo run -- ./config.toml` でも起動できます。
+## 自動切り替えの条件
 
-`[[adguard_servers]]` を追加すると複数台を設定できます。各項目は必須です。
+| 監視状態 | 動作 |
+| --- | --- |
+| Primary が全台 Down、Fallback が1台以上 Up | 予備の DNS へ切り替える（Failover） |
+| Primary が全台 Up | 通常の DNS へ戻す（Failback） |
+| それ以外 | 現在の設定を維持する |
 
-- `name`: サーバー名
-- `base_url`: AdGuard Home の管理画面の URL（`/control` は含めない）
-- `api_timeout_sec`: AdGuard API の各リクエストのタイムアウト秒数。1以上、省略時5秒。初回取得・設定変更・キャッシュ削除・Control 方式のヘルスチェックに適用（本文受信を含む）
-- `username` / `password`: API 認証情報
-- `active_upstreams`: Primary 使用時の上流 DNS 一覧
-- `standby_upstreams`: Fallback 使用時の上流 DNS 一覧
+各 DNS は `retry` 回連続で失敗すると Down、1回成功すると Up になります。起動直後の未確認状態は Unknown です。
 
-設定の読み込みや検証に失敗した場合は、監視を開始せず終了します。
-認証情報を含む `config.toml` は Git の追跡対象から除外しています。
+**Fallback の監視先が未登録、または1台も Up でなければ、自動切り替えは行いません。**
 
-## 監視設定
+## 設定項目
 
-`[monitor]` で監視条件を指定します。すべて必須です。
+### 監視条件：`[monitor]`
 
-```toml
-[monitor]
-retry = 3
-timeout_sec = 5
-interval_sec = 5
-query_fqdn = "google.com"
-```
+| 項目 | 内容 |
+| --- | --- |
+| `retry` | Down と判定する連続失敗回数。1以上 |
+| `timeout_sec` | DNS 問い合わせのタイムアウト秒数。1以上 |
+| `interval_sec` | 監視間隔の秒数。`timeout_sec` 以上 |
+| `query_fqdn` | A レコードを問い合わせるドメイン |
+| `adguard_health_check` | AdGuard 本体も監視するか。省略時 `false` |
+| `adguard_health_check_mode` | 本体の監視方式。`control`（既定）または `dns` |
 
-- `retry`: 連続失敗回数の上限（旧 `max_try`）。1以上
-- `timeout_sec`: DNS ヘルスチェックのタイムアウト秒数。1以上
-- `interval_sec`: 監視間隔の秒数。`timeout_sec` 以上
-- `query_fqdn`: ヘルスチェックで A レコードを問い合わせるドメイン
+`retry` は1回の監視内での再送回数ではなく、監視をまたいだ連続失敗回数です。
 
-## 監視対象 DNS
+### DNS 監視先：`[[dns_servers]]`
 
-`[[dns_servers]]` ごとに監視対象を追加します。すべて必須です。
+監視する DNS ごとに追加します。Primary は1台以上必要です。
 
-```toml
-[[dns_servers]]
-name = "primary-dns"
-state_group = "primary"
-ip = "192.0.2.10"
-protocol = "udp"
-```
+| 項目 | 内容 |
+| --- | --- |
+| `name` | ログに表示する名前 |
+| `state_group` | `primary` または `fallback` |
+| `ip` | 接続先の IPv4 / IPv6 アドレス |
+| `protocol` | `udp` / `tcp` / `doh` |
 
-`state_group` は `primary` / `fallback`、`protocol` は `udp` / `tcp` / `doh` を指定します。
-`ip` は IPv4 / IPv6 アドレスです。UDP/TCP の通信ポートは53です。
-Primary を1台以上設定してください。切り替え・復帰の判定は既存どおり Primary の状態を基準にします。
+UDP / TCP はポート53を使用します。DoH の場合は次の項目も指定します。
 
-Primary が全台 Down の場合、Fallback に1台以上 Up が確認できたときだけ切り替えます。
-Fallback が未設定、全台 Down、または Up が未確認の場合は切り替えを見送り、ログに記録します。
-切り替え先の `standby_upstreams` に対応する監視対象を `state_group = "fallback"` で登録してください。
-Primary 全台 Up で復帰します。すでに切り替え先を使用している AdGuard への再設定は行いません。
+| DoH 専用項目 | 内容 |
+| --- | --- |
+| `server_name` | 必須。TLS 証明書の検証に使うホスト名（URL は不可） |
+| `path` | 省略時 `/dns-query` |
+| `port` | 省略時 `443` |
 
-起動時の上流 DNS は並び順を無視して Primary / Fallback の設定と比較します。
-どちらとも一致しない場合は Unknown としてログに記録します。
-Unknown でも監視結果に応じた自動切り替え・復帰の対象となります。
+DoH の記入例は [config.example.toml](config.example.toml) にあります。
 
-設定変更は再起動後に反映されます。
+### AdGuard Home：`[[adguard_servers]]`
 
-### DoH
+設定を変更する AdGuard Home ごとに追加します。1台以上必要です。
 
-```toml
-[[dns_servers]]
-name = "cloudflare-doh"
-state_group = "fallback"
-ip = "1.1.1.1"
-protocol = "doh"
-server_name = "cloudflare-dns.com"
-path = "/dns-query"
-port = 443
-```
+| 項目 | 内容 |
+| --- | --- |
+| `name` | ログに表示する名前 |
+| `base_url` | 管理画面の URL。末尾に `/control` を付けない |
+| `username` / `password` | 管理 API の認証情報 |
+| `active_upstreams` | Primary 使用時の上流 DNS 一覧 |
+| `standby_upstreams` | Fallback 使用時の上流 DNS 一覧 |
+| `api_timeout_sec` | 管理 API のタイムアウト秒数。1以上、省略時 `5` |
 
-`server_name` は必須で、TLS 証明書の検証と SNI に使用するホスト名を指定します。
-URL ではなくホスト名のみ指定してください。接続先は `ip` を使用します。
-`path` は省略時 `/dns-query`、`port` は省略時443です。これら3項目は DoH 専用です。
-HTTP/2 の DoH を使用し、公開ルート証明書で TLS 証明書を検証します。
-AdGuard 本体の `adguard_health_check_mode = "dns"` は引き続き UDP/53 です。
+## AdGuard 本体の監視（任意）
 
-## AdGuard 本体のヘルスチェック
+`adguard_health_check = true` で有効になります。結果の記録・表示用で、上流 DNS の切り替え条件には影響しません。
 
-`[monitor]` の `adguard_health_check = true` で有効、`false` で無効にします。
-省略時は無効です。全 AdGuard サーバーに共通で適用されます。
+| 方式 | 確認する内容 | タイムアウト |
+| --- | --- | --- |
+| `control` | 管理 API の `/control/status` が `running = true` を返すか | `api_timeout_sec` |
+| `dns` | `base_url` のホストへ UDP/53 で名前解決できるか | `timeout_sec` |
 
-`adguard_health_check_mode = "control"`（省略時も control）または `"dns"` で判定方式を選択します。
+本体の監視を無効にしても、上流 DNS の取得・切り替えには管理 API を使います。
 
-`control` は監視ループごとに認証付き `GET /control/status` を実行し、
-正常な JSON 応答で `running = true` なら Up とします。
-HTTP エラー、JSON 不正、`running = false`、通信失敗、タイムアウトを失敗として記録し、
-`retry` 回連続失敗すると Down、成功すると Up に復帰します。結果と状態はログに表示します。
-`interval_sec`、`retry` は DNS 監視と共通です。
-Control 方式のタイムアウトは各 `[[adguard_servers]]` の `api_timeout_sec`、DNS 方式は `[monitor]` の `timeout_sec` を使います。
+## 運用上の注意
 
-`dns` は各 AdGuard の `base_url` のホストへ UDP/53 で `query_fqdn` の A レコードを問い合わせます。
-管理画面のポートは使用しません。ホスト名の場合はシステムの名前解決で最初に得られた IP を使用します。
-DNS 応答の成功・失敗を判定し、Control API の状態はチェックしません。
-
-この監視は状態の記録・ログ表示を行います。DNS の切り替え条件は変更しません。
-無効時も、起動時の上流 DNS 設定取得と必要な切り替え API は実行します。
+- `config.toml` にはパスワードが含まれます。Git の追跡対象からは除外しています。
+- 起動時に AdGuard Home の上流設定を取得します。Primary / Fallback のどちらとも一致しない場合も、自動切り替えの対象になります。
+- 稼働中に管理画面などで上流設定を変更しても、内部状態には自動反映されません。変更後は本ツールを再起動してください。
+- 設定ファイルの読み込みや検証に失敗した場合は、監視を開始せず終了します。
