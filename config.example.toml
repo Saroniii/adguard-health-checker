@@ -1,0 +1,54 @@
+# IP アドレス・ホスト名は説明用の値です。実際の環境に置き換えてください。
+# このファイルを config.toml にコピーし、接続先と認証情報を設定してください。
+# 複数台の場合は [[adguard_servers]] を追加してください。
+[monitor]
+adguard_health_check = true
+adguard_health_check_mode = "control" # "dns" または "control"
+retry = 3
+timeout_sec = 5
+interval_sec = 5
+query_fqdn = "example.com"
+
+[[dns_servers]]
+name = "primary-dns-1"
+state_group = "primary"
+ip = "192.0.2.10"
+protocol = "udp"
+
+[[dns_servers]]
+name = "primary-dns-2"
+state_group = "primary"
+ip = "192.0.2.11"
+protocol = "udp"
+
+# standby_upstreams に対応する監視対象を登録してください。
+[[dns_servers]]
+name = "fallback-dns-1"
+state_group = "fallback"
+ip = "198.51.100.10"
+protocol = "udp"
+
+[[dns_servers]]
+name = "fallback-dns-2"
+state_group = "fallback"
+ip = "198.51.100.11"
+protocol = "udp"
+
+[[adguard_servers]]
+name = "adguard-example"
+base_url = "http://192.0.2.20:3000"
+api_timeout_sec = 5
+username = "admin"
+password = "change-me"
+active_upstreams = ["192.0.2.10", "192.0.2.11"]
+standby_upstreams = ["198.51.100.10", "198.51.100.11"]
+
+# DoH 監視対象の設定例（利用する場合はコメントを外す）
+# [[dns_servers]]
+# name = "doh-example"
+# state_group = "fallback"
+# ip = "203.0.113.53"
+# protocol = "doh"
+# server_name = "resolver.example.com"
+# path = "/dns-query" # 省略時も /dns-query
+# port = 443 # 省略時も 443
