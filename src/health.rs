@@ -5,6 +5,16 @@ pub(crate) enum HealthCheckError {
     Timeout,
 }
 
+impl std::fmt::Display for HealthCheckError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dns(message) => write!(formatter, "DNS: {message}"),
+            Self::Api(message) => write!(formatter, "API: {message}"),
+            Self::Timeout => formatter.write_str("Timeout"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HealthCheckState {
     Up,
@@ -23,6 +33,29 @@ pub(crate) struct HealthMonitor {
 }
 
 impl HealthMonitor {
+    // 初回の正常確認と同じ状態の繰り返しは通常ログに出さない。
+    pub(crate) fn log_transition(
+        &self,
+        previous: HealthCheckState,
+        name: &str,
+        kind: &str,
+        result: &Result<(), HealthCheckError>,
+    ) {
+        if previous == self.state {
+            return;
+        }
+        match self.state {
+            HealthCheckState::Down => {
+                if let Err(error) = result {
+                    log::warn!("{name} {kind} Down: {error}");
+                }
+            }
+            HealthCheckState::Up if previous == HealthCheckState::Down => {
+                log::info!("{name} {kind} Up (復旧)");
+            }
+            _ => {}
+        }
+    }
     /// retry 回連続で失敗するまでは前の状態を保ち、成功時は即座に Up に戻す。
     /// retry は同一チェック内の再送回数ではなく、監視ループをまたぐ失敗の閾値。
     pub(crate) fn record_with_retry(&mut self, result: &Result<(), HealthCheckError>, retry: u32) {
@@ -64,6 +97,42 @@ impl HealthMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logs_only_down_and_recovery_transitions() {
+        struct Capture(std::sync::Mutex<Vec<log::Level>>);
+        impl log::Log for Capture {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if record.args().to_string().starts_with("log-test ") {
+                    self.0.lock().unwrap().push(record.level());
+                }
+            }
+            fn flush(&self) {}
+        }
+        static CAPTURE: Capture = Capture(std::sync::Mutex::new(Vec::new()));
+        log::set_logger(&CAPTURE).unwrap();
+        log::set_max_level(log::LevelFilter::Debug);
+        let mut monitor = HealthMonitor::new();
+        for result in [
+            Ok(()),
+            Err(HealthCheckError::Timeout),
+            Err(HealthCheckError::Timeout),
+            Err(HealthCheckError::Timeout),
+            Ok(()),
+            Ok(()),
+        ] {
+            let previous = monitor.state;
+            monitor.record_with_retry(&result, 2);
+            monitor.log_transition(previous, "log-test", "DNS", &result);
+        }
+        assert_eq!(
+            *CAPTURE.0.lock().unwrap(),
+            [log::Level::Warn, log::Level::Info]
+        );
+    }
 
     #[test]
     fn retry_threshold_and_recovery() {

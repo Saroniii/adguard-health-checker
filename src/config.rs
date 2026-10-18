@@ -256,7 +256,10 @@ mod tests {
         assert_eq!(clients[0].name, "adguard-example");
         assert_eq!(clients[0].base_url, "http://192.0.2.20:3000");
         assert_eq!(clients[0].active_upstreams, ["192.0.2.10", "192.0.2.11"]);
-        assert_eq!(clients[0].standby_upstreams, ["198.51.100.10", "198.51.100.11"]);
+        assert_eq!(
+            clients[0].standby_upstreams,
+            ["198.51.100.10", "198.51.100.11"]
+        );
         assert_eq!(clients[0].username, "admin");
         assert_eq!(clients[0].password, "change-me");
         assert_eq!(clients[0].active_dns, crate::api::ActiveDns::Unknown);

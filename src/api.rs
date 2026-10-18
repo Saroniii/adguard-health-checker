@@ -73,18 +73,21 @@ impl AdGuardClient {
                     .ok_or_else(|| HealthCheckError::Dns("No address for AdGuard host".into()))?
                     .ip()
             };
-            let mut server = crate::dns::DnsServer::new(
+            let server = crate::dns::DnsServer::new(
                 &self.name,
                 ActiveDns::Unknown,
                 ip,
                 crate::dns::DNSServerType::Udp,
             );
-            server.health_check(query_fqdn, timeout, retry).await
+            server.check_once(query_fqdn, timeout).await
         })
         .await
         .unwrap_or(Err(HealthCheckError::Timeout));
         // 一時生成した DNS サーバーではなく、クライアント側で連続失敗を保持する。
+        let previous = self.monitor.state;
         self.monitor.record_with_retry(&result, retry);
+        self.monitor
+            .log_transition(previous, &self.name, "AdGuard", &result);
         result
     }
 
@@ -144,7 +147,10 @@ impl AdGuardClient {
             Ok(Err(error)) => Err(HealthCheckError::Api(error.without_url().to_string())),
             Err(_) => Err(HealthCheckError::Timeout),
         };
+        let previous = self.monitor.state;
         self.monitor.record_with_retry(&result, retry);
+        self.monitor
+            .log_transition(previous, &self.name, "AdGuard", &result);
         result
     }
 
@@ -184,22 +190,28 @@ impl AdGuardClient {
         match self.set_upstreams(&self.standby_upstreams).await {
             Ok(_) => {
                 // キャッシュ削除の成否にかかわらず、上流設定の変更自体は反映済み。
-                let _ = self.cache_clear().await;
+                if let Err(error) = self.cache_clear().await {
+                    log::error!("{}: キャッシュ削除失敗: {}", self.name, error.without_url());
+                }
                 self.active_dns = ActiveDns::Fallback;
+                log::info!("{}: Fallback DNS へ切り替えました", self.name);
             }
             // 失敗時は内部状態を維持し、次回の監視ループで再試行できるようにする。
-            Err(e) => eprintln!("Failover error: {e}"),
+            Err(e) => log::error!("{}: Failover error: {}", self.name, e.without_url()),
         }
     }
 
     pub async fn failback(&mut self) {
         match self.set_upstreams(&self.active_upstreams).await {
             Ok(_) => {
-                let _ = self.cache_clear().await;
+                if let Err(error) = self.cache_clear().await {
+                    log::error!("{}: キャッシュ削除失敗: {}", self.name, error.without_url());
+                }
                 self.active_dns = ActiveDns::Primary;
+                log::info!("{}: Primary DNS へ復帰しました", self.name);
             }
             // 復帰に失敗した場合も、次回の再試行のため内部状態を維持する。
-            Err(e) => eprintln!("Failback error: {e}"),
+            Err(e) => log::error!("{}: Failback error: {}", self.name, e.without_url()),
         }
     }
 

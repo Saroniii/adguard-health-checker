@@ -48,7 +48,7 @@ vi config.toml
 ./target/release/adguard-health-checker ./config.toml
 ```
 
-監視結果は端末に出力されます。終了は `Ctrl+C` です。
+ログは標準エラー出力に出ます。終了は `Ctrl+C` です。
 
 設定ファイルは引数で指定できます。省略すると、カレントディレクトリの `config.toml` を読み込みます。設定を変更したら再起動してください。
 
@@ -123,6 +123,20 @@ DoH の記入例は [config.example.toml](config.example.toml) にあります�
 | `dns` | `base_url` のホストへ UDP/53 で名前解決できるか | `timeout_sec` |
 
 本体の監視を無効にしても、上流 DNS の取得・切り替えには管理 API を使います。
+
+## ログ
+
+既定は `info` です。起動・Down への変化・復旧・切り替え結果・API エラーを記録します。初回の正常確認や同じ Down 状態の繰り返しは表示しません。
+
+```bash
+# 毎回のチェック結果も表示する
+RUST_LOG=adguard_health_checker=debug ./target/release/adguard-health-checker ./config.toml
+
+# Down・切り替え不可の警告とエラーだけ表示する
+RUST_LOG=warn ./target/release/adguard-health-checker ./config.toml
+```
+
+`RUST_LOG=debug` では依存ライブラリの詳細ログも表示されます。
 
 ## 運用上の注意
 

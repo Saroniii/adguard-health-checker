@@ -1,5 +1,8 @@
 use hickory_resolver::{
-    Resolver, TokioResolver, config::{NameServerConfig, ResolverConfig, ResolverOpts}, net::runtime::TokioRuntimeProvider, proto::rr::RecordType,
+    Resolver, TokioResolver,
+    config::{NameServerConfig, ResolverConfig, ResolverOpts},
+    net::runtime::TokioRuntimeProvider,
+    proto::rr::RecordType,
 };
 use std::{net::IpAddr, time::Duration};
 use tokio::time::timeout;
@@ -47,9 +50,21 @@ impl DnsServer {
         timeout_duration: Duration,
         retry: u32,
     ) -> Result<(), HealthCheckError> {
-        let result = health_check(&self.resolver, query_fqdn, timeout_duration).await;
+        let result = self.check_once(query_fqdn, timeout_duration).await;
+        let previous = self.monitor.state;
         self.monitor.record_with_retry(&result, retry);
+        self.monitor
+            .log_transition(previous, &self.name, "DNS", &result);
         result
+    }
+
+    // AdGuard 本体の監視では、呼び出し側が状態とログを管理する。
+    pub(crate) async fn check_once(
+        &self,
+        query_fqdn: &str,
+        timeout_duration: Duration,
+    ) -> Result<(), HealthCheckError> {
+        health_check(&self.resolver, query_fqdn, timeout_duration).await
     }
 }
 

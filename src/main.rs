@@ -10,17 +10,17 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use failover::{FailoverTrigger, dns_trigger};
 
-use health::HealthCheckError;
-
 #[tokio::main]
 async fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    log::info!("監視を開始します");
     let config_path = std::env::args_os()
         .nth(1)
         .unwrap_or_else(|| "config.toml".into());
     let config = match config::load(&config_path) {
         Ok(servers) => servers,
         Err(error) => {
-            eprintln!(
+            log::error!(
                 "設定ファイル {}: {error}",
                 std::path::Path::new(&config_path).display()
             );
@@ -52,16 +52,16 @@ async fn main() {
             Ok(upstreams) => {
                 adg.active_dns = adg.classify_upstreams(&upstreams);
                 match adg.active_dns {
-                    api::ActiveDns::Primary => println!("{}: Primary DNSを使用中", adg.name),
-                    api::ActiveDns::Fallback => println!("{}: Fallback DNSを使用中", adg.name),
-                    api::ActiveDns::Unknown => eprintln!(
+                    api::ActiveDns::Primary => log::info!("{}: Primary DNSを使用中", adg.name),
+                    api::ActiveDns::Fallback => log::info!("{}: Fallback DNSを使用中", adg.name),
+                    api::ActiveDns::Unknown => log::warn!(
                         "{}: 上流 DNS が Primary / Fallback の設定と一致しません (Unknown)",
                         adg.name
                     ),
                 }
             }
             Err(e) => {
-                eprintln!("{}: {}", adg.name, e.to_string());
+                log::error!("{}: {}", adg.name, e.without_url());
             }
         }
     }
@@ -70,6 +70,7 @@ async fn main() {
     let mut ticker = interval(Duration::from_secs(interval_sec));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    let mut no_healthy_fallback = false;
     loop {
         // 次のヘルスチェック時刻まで待機
         ticker.tick().await;
@@ -86,54 +87,32 @@ async fn main() {
             }))
             .await;
             for (server, result) in adguard_servers.iter().zip(results) {
-                match result {
-                    Ok(()) => println!(
-                        "{} AdGuard OK (state: {:?})",
-                        server.name, server.monitor.state
-                    ),
-                    Err(error) => eprintln!(
-                        "{} AdGuard Error: {:?} (state: {:?}, failures: {}/{})",
-                        server.name,
-                        error,
-                        server.monitor.state,
-                        server.monitor.consecutive_failed,
-                        retry
-                    ),
-                }
+                log::debug!(
+                    "{} AdGuard: {:?} (state: {:?}, failures: {}/{})",
+                    server.name,
+                    result,
+                    server.monitor.state,
+                    server.monitor.consecutive_failed,
+                    retry
+                );
             }
         }
-
-        for server in &servers {
-            println!(
-                "{} health monitor challenge {}/{}",
-                server.name,
-                server.monitor.consecutive_failed + 1,
-                retry
-            );
-        }
-
         // 全サーバーを並列にチェックし、各サーバーの監視状態を更新
         let results = join_all(servers.iter_mut().map(|server| {
             server.health_check(&query_fqdn, Duration::from_secs(timeout_sec), retry)
         }))
         .await;
 
-        // 今回の成否を表示する。切り替え判定には retry を反映した監視状態を使う。
         for (server, result) in servers.iter().zip(results) {
-            match result {
-                Ok(()) => println!("{} DNS OK", server.name),
-                Err(HealthCheckError::Dns(error)) => {
-                    println!("{} DNS Error: {error}", server.name);
-                }
-                Err(HealthCheckError::Api(error)) => {
-                    eprintln!("{} API Error: {error}", server.name);
-                }
-                Err(HealthCheckError::Timeout) => {
-                    println!("{} DNS Timeout", server.name);
-                }
-            }
+            log::debug!(
+                "{} DNS: {:?} (state: {:?}, failures: {}/{})",
+                server.name,
+                result,
+                server.monitor.state,
+                server.monitor.consecutive_failed,
+                retry
+            );
         }
-
         // Primary 全台 Down かつ Fallback に Up があれば切り替え、Primary 全台 Up で復帰。
         // Fallback 未登録・正常未確認の場合は切り替えない。
         for state_group in [api::ActiveDns::Primary, api::ActiveDns::Fallback] {
@@ -153,10 +132,14 @@ async fn main() {
                     .map(|server| server.monitor.state),
             );
 
-            if trigger == FailoverTrigger::NoHealthyFallback {
-                eprintln!(
+            let blocked = trigger == FailoverTrigger::NoHealthyFallback;
+            if blocked && !no_healthy_fallback {
+                log::warn!(
                     "Primary が全台 Down ですが、正常な Fallback が確認できないため切り替えを見送ります"
                 );
+            }
+            no_healthy_fallback = blocked;
+            if blocked {
                 continue;
             }
 
